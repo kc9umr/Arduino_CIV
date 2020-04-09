@@ -20,8 +20,22 @@ int CMD_LAYERS = 0;
 byte CMD_DATA[4] = {0x00,0x00,0x00,0x00}; 
 
 
+byte FREQ_BCD[6] = {0x00,0x00,0x00,0x00,0x00,0x00}; 
+long frequency = 27155000; //default test case loads a non-transmitting frequency
+int MHZ_100;
+int MHZ;
+int KHZ;
+int HZ;
+
 int CMD_PAYLOAD_PRESENT = 0;
 byte CMD_PAYLOAD[5] = {0x00,0x00,0x00,0x00,0x00}; 
+byte CMD_RESPONSE[16]; 
+
+boolean newData = false;
+const byte numBytes = 76;
+byte rcvFromRadio[numBytes];  // The array that store the response from the radio
+byte numReceived = 0;
+byte cwMem1[70];
 
 char radio_addr = 0x94;       // default.  Real value will be set based on selection of radio
 
@@ -40,7 +54,7 @@ char radio_addr = 0x94;       // default.  Real value will be set based on selec
 #define VFO_SELB       0x01 
 
 #define SET_FREQ       0x05 
-#define READ_FREQ      0x04
+#define READ_FREQ      0x03
 
 #define MEM_FUNC       0x08 //memory
 #define MEM_WRITE      0x09 
@@ -122,6 +136,8 @@ char radio_addr = 0x94;       // default.  Real value will be set based on selec
 #define MISC_IPPL        0x07 // Turn IP+ On/Off 
 
 
+const uint32_t decMulti[]    = {1000000000, 100000000, 10000000, 1000000, 100000, 10000, 1000, 100, 10, 1};
+
 
 
 
@@ -129,34 +145,30 @@ char radio_addr = 0x94;       // default.  Real value will be set based on selec
 
 
 int dummycount;
-long freq = 27155000; //default test case loads a non-transmitting frequency
 
-
-
-void setup() {
-    pinMode(rxPin, INPUT);
-    pinMode(txPin, OUTPUT);
-    CAT.begin(19200);
-    Serial.begin(19200);
-    Serial.flush();
-    CAT.flush();
-    pinMode(LED_BUILTIN, OUTPUT);
-    dummycount = 0;
-}
 
 void send_preamble()
 {
-  CAT.write(0xFE);       //preamble
-  CAT.write(0xFE);       //preamble
-  CAT.write(0x94);       //radio address
-  CAT.write(0x01);       //Controller Address
+  byte PREAMBLE[4] = {0xFE, 0xFE, radio_addr, CONTROLLER_ADDRESS};
+  for(int f=0; f<4; f++)
+  {
+    CAT.write(PREAMBLE[f]);
+    Serial.print(PREAMBLE[f], HEX);
+    Serial.print("-");
+  }
 }
 
 void send_post()
 {
-  CAT.write(0xFD);       //preamble
+  byte POST[4] = {0xFD};
+  for(int f=0; f<1; f++)
+  {
+    CAT.write(POST[f]);
+    Serial.print(POST[f], HEX);
+    Serial.print("--");
+    Serial.println();
+  }
 } 
-
 
 void SWAP_VFOS()  //Switch A/B VFOs
 {
@@ -166,16 +178,44 @@ void SWAP_VFOS()  //Switch A/B VFOs
   SEND_CMD();
 }
 
+void GET_RADIO_ID()  //Get Radio ID
+{
+  CMD_LAYERS = 1;
+  CMD_PAYLOAD_PRESENT = 0;
+  CMD_DATA[0] = RADIO_ID;         
+  SEND_CMD();
+  delay(10);
+  READ_DATA();
+}
+
+void GET_FREQ()  //Get Radio ID
+{
+  CMD_LAYERS = 1;
+  CMD_PAYLOAD_PRESENT = 0;
+  CMD_DATA[0] = READ_FREQ;
+  SEND_CMD();
+  delay(10);
+  READ_DATA();
+
+  //Frequency calculation algorythm borrowed from https://github.com/darkbyte-ru/ICOM-CI-V-cat/blob/master/icom-ic820-cat.ino
+  frequency = 0;  //initialize frequency before we calculate it
+  for (uint8_t i = 0; i < 5; i++) 
+  {
+    frequency += (rcvFromRadio[9 - i] >> 4) * decMulti[i * 2];
+    frequency += (rcvFromRadio[9 - i] & 0x0F) * decMulti[i * 2 + 1];
+  }
+  frequency = frequency * 100;
+  Serial.print(frequency);
+
+}
 
 void IP_TOGGLE(int sw)  //Toggle IP+
   {
       FEATURE_TOGGLE(MISC_FUNC, MISC_IPPL, sw);
   }
 
-
 void PREAMP_TOGGLE(int sw) //Toggle Preamp
 {
-
     CMD_LAYERS=2;
     CMD_DATA[0] = FEAT_FUNC;       
     CMD_DATA[1] = FEAT_PREAMP;
@@ -195,7 +235,6 @@ void PREAMP_TOGGLE(int sw) //Toggle Preamp
     
     SEND_CMD();
 }
-
 
 void NB_TOGGLE(int sw)  //Toggle Noise Blanker
   {
@@ -274,7 +313,6 @@ void FEATURE_TOGGLE(byte command, byte Feature, int sw)  //Toggle Features (popu
     SEND_CMD();
 }
 
-
 void VOICE_PLAY(int location)  
 {
   if(location<9)
@@ -288,16 +326,12 @@ void VOICE_PLAY(int location)
     Serial.print("Voice Keyer Address ");
     Serial.print(location);
     Serial.println();
-
   }
   else
   {
     Serial.print("Voice Keyer Address Error");
   }
 }
-
-
-
 
 void SEND_FREQ(long freq)
 {
@@ -327,30 +361,25 @@ void SEND_FREQ(long freq)
  SEND_CMD();
 }
 
-
-
-
 void SEND_CMD()
 {
-  int k;  
-  int j; 
   if(CMD_LAYERS>0)
   {
     send_preamble();
 
-    for(j=0;j<CMD_LAYERS;j++)            
+    for(int j=0;j<CMD_LAYERS;j++)            
         {
           CAT.write(CMD_DATA[j]);     //Send Commands
-          Serial.print(CMD_DATA[j]);
+          Serial.print(CMD_DATA[j], HEX);
           Serial.print("-");
         }
     
     if (CMD_PAYLOAD_PRESENT > 0) 
     {
-        for(k=0;k<CMD_PAYLOAD_PRESENT;k++)            
+        for(int k=0;k<CMD_PAYLOAD_PRESENT;k++)            
         {
           CAT.write(CMD_PAYLOAD[k]);  //Send Data payload, if applicale
-          Serial.print(CMD_PAYLOAD[k]);
+          Serial.print(CMD_PAYLOAD[k], HEX);
           Serial.print("-");
         }
     }
@@ -362,18 +391,68 @@ void SEND_CMD()
     CMD_PAYLOAD_PRESENT = 0;
 }
 
+void READ_DATA()
+{
+    static boolean recvInProgress = false;
+    static byte index = 0;
+    byte startMarker = 0xFE;
+    byte endMarker = 0xFD;
+    byte rb;                        // read one byte from Serial
+   
+    while (CAT.available() > 0 && newData == false) {
+        rb = CAT.read();    
 
+        if (recvInProgress == true) 
+        {
+            if (rb != endMarker) 
+            {
+              rcvFromRadio[index] = rb;
+              Serial.print(rcvFromRadio[index], HEX);
+              Serial.print("-");            
+              index++;
+              if (index >= numBytes )
+              {
+                index = numBytes -1;
+              }
+            }
+            else {
+              rcvFromRadio[index] = '\0'; // terminate the string
+              recvInProgress = false;
+              numReceived = index;  // save the number for use when printing
+              index = 0;
+              newData = true;
+            }
+        }
+        else if (rb == startMarker) {
+            recvInProgress = true;
+        }
+    }  
+}  
+
+void setup() {
+    pinMode(rxPin, INPUT);
+    pinMode(txPin, OUTPUT);
+    CAT.begin(19200);
+    Serial.begin(19200);
+    long buffer_freq;
+    long buffer_freq2;
+    Serial.flush();
+    CAT.flush();
+//  pinMode(LED_BUILTIN, OUTPUT);
+    dummycount = 0;
+
+  Serial.print("No setup functions");
+
+}
 
 void loop() 
 {
   // put your main code here, to run repeatedly:
 
-
   while(dummycount<1)
   {
-    VOICE_PLAY(8);
-    delay(10000);  
-    SWAP_VFOS();
+    Serial.print("No loop functions");
     dummycount++;
   } 
+
 }
